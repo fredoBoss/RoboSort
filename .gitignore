@@ -1,0 +1,9 @@
+data/
+output/
+*.jpg
+*.txt
+*.skp
+*.skb
+*.scad
+*.exe
+*.img.xz
