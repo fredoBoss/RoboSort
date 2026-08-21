@@ -1,0 +1,48 @@
+Project Name: RoboSort
+
+Overview:
+RoboSort is a mobile robot rover designed to autonomously pick up trash and sort it into two categories: biodegradable (bio) and non-biodegradable (non-bio). The robot navigates its environment, detects and avoids obstacles, collects trash using a mechanical arm, and deposits it into the correct bin via a conveyor and sorting mechanism.
+
+---
+
+Hardware Architecture:
+
+1. Main Boards:
+   - Orange Pi 1: Primary computing board responsible for computer vision (trash detection and classification into bio/non-bio).
+   - Arduino Mega: Secondary controller handling all low-level drive and actuator control.
+
+2. Movement System:
+   - 4x DC Motors: Drive the rover's wheels for omnidirectional or differential movement.
+   - 4x Ultrasonic Sensors: Mounted around the rover for real-time obstacle detection and avoidance.
+
+3. Trash Collection Mechanism:
+   - Servo Motors (Lift): Raises and lowers the trash-picking arm.
+   - Servo Motors (Stretch/Scope): Extends and retracts the arm to reach trash items.
+   - 1x DC Motor (Conveyor): Drives a conveyor belt that transports collected trash from the arm to the sorting bin area.
+
+4. Sorting Mechanism:
+   - 1x Servo Motor (Sorting Arm/Trigger): Actuates a gate or arm that directs trash into either the bio or non-bio bin based on classification received from the Orange Pi.
+
+---
+
+System Communication:
+- The Orange Pi 1 runs the computer vision pipeline to classify detected trash.
+- Classification results are sent to the Arduino Mega (e.g., via UART/Serial).
+- The Arduino Mega executes all physical actions: motor driving, obstacle avoidance logic, conveyor control, arm movement, and sorting trigger.
+
+---
+
+Software Components:
+- Computer Vision (Orange Pi 1): Image capture and inference to classify trash as biodegradable or non-biodegradable.
+- Drive Control (Arduino Mega): Motor speed/direction control, ultrasonic-based obstacle avoidance, servo and conveyor sequencing, and sorting actuation.
+
+---
+
+Workflow:
+1. Rover navigates autonomously while ultrasonic sensors detect and avoid obstacles.
+2. Camera on the Orange Pi detects a trash item in the rover's path.
+3. The arm servos extend and lower to pick up the trash.
+4. The conveyor motor transports the trash toward the bin area.
+5. The Orange Pi classifies the trash (bio or non-bio) and signals the Arduino.
+6. The sorting servo triggers to direct the trash into the correct bin.
+7. The rover resumes navigation and repeats the cycle.
