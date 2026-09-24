@@ -43,8 +43,9 @@ const uint16_t SERVO_MAX_US = 2500;
  */
 const uint8_t SERVO_HOME = 90;
 
-const uint8_t LIFT_UP     = 150;   // arm raised, clear of the ground
-const uint8_t LIFT_DOWN   = 30;    // arm down on the item
+// Lower angle is up on this linkage - 150 was measured driving the arm down.
+const uint8_t LIFT_UP     = 30;    // arm raised, clear of the ground
+const uint8_t LIFT_DOWN   = 150;   // arm down on the item
 const uint8_t STRETCH_OUT = 160;   // reaching out for the item
 const uint8_t STRETCH_IN  = SERVO_HOME;  // retracted over the belt
 const uint8_t SORT_BIO    = 40;
@@ -65,10 +66,25 @@ const int8_t LIFT_R_TRIM = 0;   // degrees, applied to the right lift servo
 
 /*
  * MG996R is about 0.17 s per 60 deg at 4.8 V, so the widest move here
- * (lift 150 -> 30) takes a little over 0.3 s unloaded. 600 ms leaves room
+ * (lift 30 -> 150) takes a little over 0.3 s unloaded. 600 ms leaves room
  * for the arm's own weight; drop it once the real linkage is on and timed.
  */
 const uint16_t SERVO_SETTLE_MS = 600;
+
+/*
+ * The lift pair is ramped instead of jumped. Writing 30 -> 150 in one go
+ * makes both MG996Rs slam at full speed together, and the current spike
+ * sags the supply far enough to hang the Mega or its USB-serial chip - the
+ * board goes silent with no reset banner. 2 deg every 15 ms is ~130 deg/s,
+ * slower than the servo's own top speed, so it tracks the ramp and never
+ * stalls; the full 120 deg swing takes about 0.9 s.
+ */
+const uint8_t  LIFT_STEP_DEG  = 2;
+const uint8_t  LIFT_STEP_MS   = 15;
+const uint16_t LIFT_HOLD_MS   = 150;    // after the ramp, let the arm stop swinging
+
+// Last angle sent to the lift pair. attach() parks it at 90, so it starts there.
+uint8_t liftAngle = SERVO_HOME;
 const uint16_t CONVEYOR_RUN_MS = 2500;  // belt time from the arm to the bin
 const uint8_t  CONVEYOR_SPEED  = 200;
 
