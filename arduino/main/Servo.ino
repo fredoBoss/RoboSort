@@ -240,6 +240,11 @@ void conveyorStop() {
   digitalWrite(PIN_CONV_RELAY, CONV_RELAY_ACTIVE_LOW ? HIGH : LOW);
 }
 
+// Reads back the level the relay pin is driven to.
+bool conveyorIsOn() {
+  return digitalRead(PIN_CONV_RELAY) == (CONV_RELAY_ACTIVE_LOW ? LOW : HIGH);
+}
+
 // Run the belt long enough to carry one item to the bin, then stop.
 void conveyorPulse() {
   conveyorRun();

@@ -26,7 +26,10 @@
  *     A  autonomous driving
  *     ?  print the list
  * One command per line; a line that is not exactly one of these is
- * refused whole. A drive command runs for MANUAL_MOVE_MS and then stops by
+ * refused whole. Every line is answered: "RX <line>" the moment it
+ * arrives, then "OK ..." when done or "FAIL ... - reason" when refused
+ * (see endLine()). '?' adds a STATUS line whose uptime shows whether the
+ * Mega has reset. A drive command runs for MANUAL_MOVE_MS and then stops by
  * itself - send it again to keep going - so a dropped cable or a forgotten
  * key cannot leave the rover driving. Forward is refused, or cut short,
  * while either sensor reads closer than STOP_CM. Lowercase is accepted,
@@ -230,12 +233,29 @@ void readSerialCommand() {
   }
 }
 
+/*
+ * Every line is echoed as "RX <line>" before anything else happens, and
+ * flushed onto the wire before a relay or servo can move - if switching a
+ * motor knocks out the USB link, the last RX still proves the command
+ * arrived. Exactly one result follows:
+ *     OK <what>              done
+ *     FAIL <what> - <why>    refused, nothing moved
+ * and a drive move reports later how it ended:
+ *     DONE <move> - ...      its time ran out
+ *     STOP forward - ...     an obstacle cut it short
+ */
 void endLine() {
   rxLine[rxLen] = '\0';
-  if (rxTooLong) {
-    Serial.print(F("NAK "));
+  if (rxLen > 0 || rxTooLong) {
+    Serial.print(F("RX "));
     Serial.print(rxLine);
-    Serial.println(F("... (too long)"));
+    if (rxTooLong) Serial.print(F("..."));
+    Serial.println();
+    Serial.flush();
+  }
+
+  if (rxTooLong) {
+    Serial.println(F("FAIL - too long, not a command (send ? for the list)"));
   } else if (rxLen > 0) {
     runCommand(rxLine);
   }
@@ -265,8 +285,12 @@ void runCommand(const char *line) {
     case CMD_NONE:
       lastCommand   = c;
       lastCommandAt = millis();
-      Serial.print(F("ACK "));
-      Serial.println(c);
+      Serial.print(F("OK "));
+      if (c == CMD_BIO)         Serial.print(F("bio"));
+      else if (c == CMD_NONBIO) Serial.print(F("non-bio"));
+      else                      Serial.print(F("nothing detected"));
+      if (manualMode && c != CMD_NONE) Serial.print(F(" - no pickup in MANUAL, send A"));
+      Serial.println();
       break;
 
     // Manual driving - each command runs MANUAL_MOVE_MS, then stops.
@@ -276,28 +300,29 @@ void runCommand(const char *line) {
     case '6':
       manualDrive(c);
       break;
-    case '5': enterManual(); conveyorStop(); ackMove(F("stop")); break;
+    case '5': enterManual(); conveyorStop(); ok(F("stop - wheels and conveyor stopped")); break;
 
     // Manual movement tests. Each blocks until the joint has settled.
-    case 'U': enterManual(); armLiftUp();     ackMove(F("lift up"));      break;
-    case 'D': enterManual(); armLiftDown();   ackMove(F("lift down"));    break;
-    case 'S': enterManual(); armStretchOut(); ackMove(F("stretch out"));  break;
-    case 'R': enterManual(); armRetract();    ackMove(F("retract"));      break;
-    case 'H': enterManual(); servoResetAll(); ackMove(F("home 90"));      break;
-    case 'C': enterManual(); conveyorRun();   ackMove(F("conveyor on"));  break;
-    case 'O': enterManual(); conveyorStop();  ackMove(F("conveyor off")); break;
+    case 'U': enterManual(); armLiftUp();     ok(F("lift up"));                 break;
+    case 'D': enterManual(); armLiftDown();   ok(F("lift down"));               break;
+    case 'S': enterManual(); armStretchOut(); ok(F("stretch out"));             break;
+    case 'R': enterManual(); armRetract();    ok(F("retract"));                 break;
+    case 'H': enterManual(); servoResetAll(); ok(F("home - all servos at 90")); break;
+    case 'C': enterManual(); conveyorRun();   ok(F("conveyor on"));             break;
+    case 'O': enterManual(); conveyorStop();  ok(F("conveyor off"));            break;
 
     case 'A': resumeAuto(); break;
-    case '?': printHelp();  break;
+    case '?': printHelp(); printStatus(); break;
 
     default:
-      Serial.print(F("NAK "));
-      Serial.println(line);
+      Serial.print(F("FAIL "));
+      Serial.print(line);
+      Serial.println(F(" - unknown command (send ? for the list)"));
   }
 }
 
-void ackMove(const __FlashStringHelper *what) {
-  Serial.print(F("ACK "));
+void ok(const __FlashStringHelper *what) {
+  Serial.print(F("OK "));
   Serial.println(what);
 }
 
@@ -326,18 +351,34 @@ void manualDrive(char move) {
   if (move == '8' && sideBlocked()) {
     driveStop();
     manualMove = 0;
-    reportBlocked();
+    Serial.print(F("FAIL forward - "));
+    printBlocked();
     return;
   }
 
   switch (move) {
-    case '8': driveForward(DRIVE_SPEED);  ackMove(F("forward"));    break;
-    case '2': driveBackward(DRIVE_SPEED); ackMove(F("backward"));   break;
-    case '4': driveTurnLeft(TURN_SPEED);  ackMove(F("turn left"));  break;
-    case '6': driveTurnRight(TURN_SPEED); ackMove(F("turn right")); break;
+    case '8': driveForward(DRIVE_SPEED);  break;
+    case '2': driveBackward(DRIVE_SPEED); break;
+    case '4': driveTurnLeft(TURN_SPEED);  break;
+    case '6': driveTurnRight(TURN_SPEED); break;
   }
   manualMove   = move;
   manualMoveAt = millis();   // after drive(), which may pause before a reversal
+
+  Serial.print(F("OK "));
+  Serial.print(moveName(move));
+  Serial.print(F(" - running "));
+  Serial.print(MANUAL_MOVE_MS);
+  Serial.println(F(" ms"));
+}
+
+const __FlashStringHelper *moveName(char move) {
+  switch (move) {
+    case '8': return F("forward");
+    case '2': return F("backward");
+    case '4': return F("turn left");
+    default:  return F("turn right");
+  }
 }
 
 // Every loop in MANUAL: end a drive move when its time is up, and cut a
@@ -347,12 +388,15 @@ void serviceManualMove() {
 
   if (millis() - manualMoveAt >= MANUAL_MOVE_MS) {
     driveStop();
+    Serial.print(F("DONE "));
+    Serial.print(moveName(manualMove));
+    Serial.println(F(" - time up, send it again to keep going"));
     manualMove = 0;
-    Serial.println(F("STOP - move done, send it again to keep going"));
   } else if (manualMove == '8' && sideBlocked()) {
     driveStop();
     manualMove = 0;
-    reportBlocked();
+    Serial.print(F("STOP forward - "));
+    printBlocked();
   }
 }
 
@@ -361,12 +405,36 @@ bool sideBlocked() {
   return distLeft < STOP_CM || distRight < STOP_CM;
 }
 
-void reportBlocked() {
-  Serial.print(F("BLOCKED - left "));
+void printBlocked() {
+  Serial.print(F("blocked: left "));
   Serial.print(distLeft);
   Serial.print(F(" cm, right "));
   Serial.print(distRight);
-  Serial.println(F(" cm"));
+  Serial.print(F(" cm (limit "));
+  Serial.print(STOP_CM);
+  Serial.println(F(" cm)"));
+}
+
+/*
+ * One line of state. After a silence it tells the two failures apart: a
+ * small uptime means the Mega reset, a large one means it kept running
+ * and only the USB link dropped.
+ */
+void printStatus() {
+  readAllDistances();
+  Serial.print(F("STATUS "));
+  Serial.print(manualMode ? F("MANUAL") : F("AUTO"));
+  Serial.print(F(", manual move: "));
+  Serial.print(manualMove ? moveName(manualMove) : F("none"));
+  Serial.print(F(", conveyor "));
+  Serial.print(conveyorIsOn() ? F("on") : F("off"));
+  Serial.print(F(", left "));
+  Serial.print(distLeft);
+  Serial.print(F(" cm, right "));
+  Serial.print(distRight);
+  Serial.print(F(" cm, up "));
+  Serial.print(millis() / 1000);
+  Serial.println(F(" s"));
 }
 
 /*
@@ -380,15 +448,16 @@ void resumeAuto() {
   manualMove  = 0;
   lastCommand = CMD_NONE;
   conveyorStop();
-  Serial.println(F("AUTO - navigating"));
+  ok(F("autonomous - driving on its own, send 5 to stop"));
 }
 
 void printHelp() {
   Serial.println(F("commands: 8 or FORWARD  2 or BACKWARD  4 or LEFT  6 or RIGHT  5 or STOP"));
   Serial.println(F("          U lift up  D lift down  S stretch out  R retract"));
   Serial.println(F("          H home 90  C conveyor on  O conveyor off"));
-  Serial.println(F("          A autonomous"));
+  Serial.println(F("          A autonomous  ? this list + status"));
   Serial.println(F("          B bio      N non-bio    X none"));
+  Serial.println(F("replies:  RX received, OK done, FAIL refused, DONE/STOP move ended"));
 }
 
 bool isCommandFresh() {
