@@ -9,7 +9,7 @@
  * Every servo resets to SERVO_HOME (90 deg): at boot, after each pickup,
  * and whenever a command is not understood.
  *
- * Plus the conveyor DC motor, which lives here because it is part of the
+ * Plus the conveyor DC motor (on/off through a relay), which lives here because it is part of the
  * same collect-and-sort sequence rather than part of driving.
  *
  * POWER: an MG996R stalls at roughly 2.5 A. Four of them need their own
@@ -44,8 +44,9 @@ const uint16_t SERVO_MAX_US = 2500;
 const uint8_t SERVO_HOME = 90;
 
 // Lower angle is up on this linkage - 150 was measured driving the arm down.
-const uint8_t LIFT_UP     = 30;    // arm raised, clear of the ground
-const uint8_t LIFT_DOWN   = 150;   // arm down on the item
+// const uint8_t LIFT_UP     = 30;    // arm raised, clear of the ground
+const uint8_t LIFT_UP     = 60; 
+const uint8_t LIFT_DOWN   = 120;   // arm down on the item
 const uint8_t STRETCH_OUT = 160;   // reaching out for the item
 const uint8_t STRETCH_IN  = SERVO_HOME;  // retracted over the belt
 const uint8_t SORT_BIO    = 40;
@@ -85,8 +86,7 @@ const uint16_t LIFT_HOLD_MS   = 150;    // after the ramp, let the arm stop swin
 
 // Last angle sent to the lift pair. attach() parks it at 90, so it starts there.
 uint8_t liftAngle = SERVO_HOME;
-const uint16_t CONVEYOR_RUN_MS = 2500;  // belt time from the arm to the bin
-const uint8_t  CONVEYOR_SPEED  = 200;
+const uint16_t CONVEYOR_RUN_MS = 5000;  // belt time from the arm to the bin
 
 void servoSetup() {
   servoLiftL.attach(PIN_SERVO_LIFT_L,   SERVO_MIN_US, SERVO_MAX_US);
@@ -94,11 +94,12 @@ void servoSetup() {
   servoStretch.attach(PIN_SERVO_STRETCH, SERVO_MIN_US, SERVO_MAX_US);
   servoSort.attach(PIN_SERVO_SORT,       SERVO_MIN_US, SERVO_MAX_US);
 
-  const uint8_t convPins[] = {PIN_CONV_EN, PIN_CONV_IN1, PIN_CONV_IN2};
-  for (uint8_t i = 0; i < sizeof(convPins); i++) pinMode(convPins[i], OUTPUT);
+  // Relay pin written to "off" before it becomes an output, so the belt
+  // cannot twitch on for an instant at boot.
+  conveyorStop();
+  pinMode(PIN_CONV_RELAY, OUTPUT);
 
   servoResetAll();
-  conveyorStop();
 }
 
 /*
@@ -110,20 +111,37 @@ void servoSetup() {
 void liftWrite(uint8_t angle) {
   servoLiftL.write(angle);
   servoLiftR.write(constrain((int)angle + LIFT_R_TRIM, 0, 180));
+  liftAngle = angle;
+}
+
+// Walk the lift pair to target a few degrees at a time, then hold briefly.
+// Blocks until the arm is there, the same contract as the settle delays.
+void liftMoveTo(uint8_t target) {
+  while (liftAngle != target) {
+    uint8_t next;
+    if (liftAngle < target) {
+      next = (target - liftAngle > LIFT_STEP_DEG) ? liftAngle + LIFT_STEP_DEG : target;
+    } else {
+      next = (liftAngle - target > LIFT_STEP_DEG) ? liftAngle - LIFT_STEP_DEG : target;
+    }
+    liftWrite(next);
+    delay(LIFT_STEP_MS);
+  }
+  delay(LIFT_HOLD_MS);
 }
 
 // Park every servo, gate included, at the reset angle.
 void servoResetAll() {
-  liftWrite(SERVO_HOME);
   servoStretch.write(SERVO_HOME);
   servoSort.write(SERVO_HOME);
+  liftMoveTo(SERVO_HOME);
   delay(SERVO_SETTLE_MS);
 }
 
 // Arm only - the gate is sequenced separately by sortTo().
 void armHome() {
-  liftWrite(SERVO_HOME);
   servoStretch.write(SERVO_HOME);
+  liftMoveTo(SERVO_HOME);
   delay(SERVO_SETTLE_MS);
 }
 
@@ -139,20 +157,16 @@ void runPickupSequence() {
   servoStretch.write(STRETCH_OUT);
   delay(SERVO_SETTLE_MS);
 
-  liftWrite(LIFT_DOWN);
-  delay(SERVO_SETTLE_MS);
+  liftMoveTo(LIFT_DOWN);
 
-  liftWrite(LIFT_UP);               // scoop
-  delay(SERVO_SETTLE_MS);
+  liftMoveTo(LIFT_UP);              // scoop
 
   servoStretch.write(STRETCH_IN);   // bring it over the belt
   delay(SERVO_SETTLE_MS);
 
-  conveyorRun(CONVEYOR_SPEED);
-  delay(CONVEYOR_RUN_MS);
-  conveyorStop();
+  conveyorPulse();
 
-  armHome();                        // lift and stretch back to 90
+  armHome();                       // lift and stretch back to 90
   pickupBusy = false;
 }
 
@@ -185,13 +199,11 @@ void sortTo(char command) {
  * which is why the moves are exposed as calls.
  */
 void armLiftUp() {
-  liftWrite(LIFT_UP);
-  delay(SERVO_SETTLE_MS);
+  liftMoveTo(LIFT_UP);
 }
 
 void armLiftDown() {
-  liftWrite(LIFT_DOWN);
-  delay(SERVO_SETTLE_MS);
+  liftMoveTo(LIFT_DOWN);
 }
 
 void armStretchOut() {
@@ -211,26 +223,26 @@ void armRetract() {
  * LIFT_R_TRIM; if one travels the wrong way, it is mounted backwards.
  */
 void servoSweepTest() {
-  liftWrite(SERVO_HOME);
-  delay(SERVO_SETTLE_MS);
-  liftWrite(LIFT_UP);
-  delay(SERVO_SETTLE_MS);
-  liftWrite(SERVO_HOME);
-  delay(SERVO_SETTLE_MS);
-  liftWrite(LIFT_DOWN);
-  delay(SERVO_SETTLE_MS);
-  liftWrite(SERVO_HOME);
-  delay(SERVO_SETTLE_MS);
+  liftMoveTo(SERVO_HOME);
+  liftMoveTo(LIFT_UP);
+  liftMoveTo(SERVO_HOME);
+  liftMoveTo(LIFT_DOWN);
+  liftMoveTo(SERVO_HOME);
 }
 
-void conveyorRun(uint8_t speed) {
-  digitalWrite(PIN_CONV_IN1, HIGH);
-  digitalWrite(PIN_CONV_IN2, LOW);
-  analogWrite(PIN_CONV_EN, speed);
+// --------------------------------------------------------- conveyor
+// On/off only - a relay cannot set a speed.
+void conveyorRun() {
+  digitalWrite(PIN_CONV_RELAY, CONV_RELAY_ACTIVE_LOW ? LOW : HIGH);
 }
 
 void conveyorStop() {
-  digitalWrite(PIN_CONV_IN1, LOW);
-  digitalWrite(PIN_CONV_IN2, LOW);
-  analogWrite(PIN_CONV_EN, 0);
+  digitalWrite(PIN_CONV_RELAY, CONV_RELAY_ACTIVE_LOW ? HIGH : LOW);
+}
+
+// Run the belt long enough to carry one item to the bin, then stop.
+void conveyorPulse() {
+  conveyorRun();
+  delay(CONVEYOR_RUN_MS);
+  conveyorStop();
 }
