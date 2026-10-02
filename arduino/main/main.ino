@@ -11,11 +11,17 @@
  *
  * The Pi sends on change only, so a command is a latch, not a pulse.
  *
- * Nothing moves on its own. The rover boots in MANUAL with the wheels
- * stopped, and a motor only runs when a command arrives - typed into a
- * serial monitor at 9600 baud, or sent by a program on the same port. 'A'
- * hands driving to the autonomous loop; any other command below takes it
- * back, so a bench test cannot be run over by the navigation loop.
+ * Start-up: every part is initialised and reported, then the motors stay
+ * stopped for INIT_MS while a countdown runs, then the rover drives on its
+ * own - forward, turning away from anything within AVOID_CM. Opening the
+ * serial port resets the Mega, so it restarts this countdown too.
+ *
+ * Commands, typed into a serial monitor at 9600 baud or sent by a program
+ * on the same port. A drive or arm command during the countdown cancels
+ * the auto start and leaves the rover in MANUAL for bench testing; 'A'
+ * starts driving at once; the Pi's B/N/X and '?' leave the countdown
+ * running. While driving, any drive or arm command takes control back,
+ * so a bench test cannot be run over by the navigation loop.
  *     8  or FORWARD       2  or BACKWARD / BACK
  *     4  or LEFT          6  or RIGHT
  *     5  or STOP - wheels and conveyor
@@ -99,14 +105,13 @@ const uint8_t PIN_ECHO[2] = {33, 35};
 // Speeds are PWM for the L298N. Relays have no speed: 0 is stop and
 // anything else is full battery voltage.
 const uint8_t  DRIVE_SPEED   = 160;   // 0-255 cruise
-const uint8_t  VEER_SPEED    = DRIVE_BY_RELAY ? 0 : 100;  // inside wheel while bending away
 const uint8_t  TURN_SPEED    = 180;
-const uint16_t STOP_CM       = 20;    // either side closer than this: stop, back out, turn
-const uint16_t VEER_CM       = 40;    // either side closer than this: keep going, bend away
-const uint16_t VEER_HYST_CM  = 10;    // ...and keep bending until both sides clear VEER_CM by this
-const uint16_t BACKUP_MS     = 300;   // blind - there is no rear sensor
+const uint16_t AVOID_CM      = 60;    // AUTO: a side closer than this -> turn away from it
+const uint16_t STOP_CM       = 20;    // MANUAL: forward refused / cut short closer than this
+const uint16_t BACKUP_MS     = 300;   // both sides blocked: back out first - blind, no rear sensor
 const uint16_t TURN_MS       = 600;   // how long an avoidance turn runs
 const uint16_t MANUAL_MOVE_MS = 1000; // how long one manual drive command runs
+const uint16_t INIT_MS       = 10000; // after setup: motors held stopped, then auto start
 const uint32_t CMD_TIMEOUT_MS = 5000; // Pi silence before we assume no target
 
 // ------------------------------------------------------------- state
@@ -115,9 +120,11 @@ enum Command { CMD_NONE = 'X', CMD_BIO = 'B', CMD_NONBIO = 'N' };
 char     lastCommand   = CMD_NONE;
 uint32_t lastCommandAt = 0;
 bool     pickupBusy    = false;   // true while the arm sequence is running
-bool     manualMode    = true;    // boots stopped - navigation waits for 'A'
+bool     manualMode    = true;    // stopped until the init countdown ends or 'A'
 char     manualMove    = 0;       // drive command running: '8' '2' '4' '6', 0 = none
 uint32_t manualMoveAt  = 0;       // when it was last sent
+bool     autoStartPending = true; // init countdown running
+uint32_t initStartedAt    = 0;
 
 uint16_t distLeft, distRight;
 
@@ -132,12 +139,20 @@ void setup() {
 
   Serial.println(F("RoboSort Mega ready"));
   printHelp();
-  Serial.println(F("MANUAL - wheels stopped, send a drive command or A"));
+  Serial.println(F("INIT drive  - relays off, wheels stopped"));
+  Serial.println(F("INIT arm    - lift, stretch and sort servos at 90"));
+  Serial.println(F("INIT belt   - conveyor off"));
+  printSensorCheck();
+  Serial.print(F("INIT - driving starts in "));
+  Serial.print(INIT_MS / 1000);
+  Serial.println(F(" s. Any drive/arm command cancels it; A starts now."));
+  initStartedAt = millis();
 }
 
 void loop() {
   heartbeat();
   readSerialCommand();
+  serviceAutoStart();
 
   // Manual: nothing below runs, so a manual move is not undone by the
   // navigation logic. Only a drive command in progress needs watching.
@@ -148,10 +163,10 @@ void loop() {
 
   readAllDistances();
 
-  // Safety first, and without asking the Pi: anything too close on either
-  // side stops the wheels regardless of what the vision pipeline is
-  // reporting.
-  if (distLeft < STOP_CM || distRight < STOP_CM) {
+  // Safety first, and without asking the Pi: anything within AVOID_CM on
+  // either side stops the wheels and turns the rover away from it,
+  // regardless of what the vision pipeline is reporting.
+  if (distLeft < AVOID_CM || distRight < AVOID_CM) {
     driveStop();
     avoidObstacle();
     return;
@@ -167,10 +182,6 @@ void loop() {
     lastCommand = CMD_NONE;
     return;
   }
-
-  // Something near but not yet close: keep moving and bend away from it.
-  // An arc scrubs the two free wheels far less than stopping to spin.
-  if (veerAway()) return;
 
   driveForward(DRIVE_SPEED);
 }
@@ -311,7 +322,7 @@ void runCommand(const char *line) {
     case 'C': enterManual(); conveyorRun();   ok(F("conveyor on"));             break;
     case 'O': enterManual(); conveyorStop();  ok(F("conveyor off"));            break;
 
-    case 'A': resumeAuto(); break;
+    case 'A': resumeAuto(); ok(F("autonomous - driving on its own, send 5 to stop")); break;
     case '?': printHelp(); printStatus(); break;
 
     default:
@@ -333,6 +344,7 @@ void ok(const __FlashStringHelper *what) {
  * driving through it.
  */
 void enterManual() {
+  cancelAutoStart();
   driveStop();
   manualMove = 0;
   if (manualMode) return;
@@ -346,6 +358,7 @@ void enterManual() {
  * hundred ms drives smoothly - no stop in between to click the relays.
  */
 void manualDrive(char move) {
+  cancelAutoStart();
   if (!manualMode) enterManual();   // taking over from autonomous driving
 
   if (move == '8' && sideBlocked()) {
@@ -434,7 +447,14 @@ void printStatus() {
   Serial.print(distRight);
   Serial.print(F(" cm, up "));
   Serial.print(millis() / 1000);
-  Serial.println(F(" s"));
+  Serial.print(F(" s"));
+  if (autoStartPending) {
+    uint32_t elapsed = millis() - initStartedAt;
+    Serial.print(F(", auto start in "));
+    Serial.print(elapsed >= INIT_MS ? 0 : (INIT_MS - elapsed + 999) / 1000);
+    Serial.print(F(" s"));
+  }
+  Serial.println();
 }
 
 /*
@@ -444,11 +464,43 @@ void printStatus() {
  * by 'C' is stopped too - in AUTO the pickup sequence owns it.
  */
 void resumeAuto() {
+  autoStartPending = false;
   manualMode  = false;
   manualMove  = 0;
   lastCommand = CMD_NONE;
   conveyorStop();
-  ok(F("autonomous - driving on its own, send 5 to stop"));
+}
+
+// Every loop: count the init period down once a second, then start
+// driving. Nothing happens once it has fired or been cancelled.
+void serviceAutoStart() {
+  static uint8_t shown = 0;   // last whole second printed
+  if (!autoStartPending) return;
+
+  uint32_t elapsed = millis() - initStartedAt;
+  if (elapsed >= INIT_MS) {
+    resumeAuto();
+    Serial.print(F("AUTO - init done, driving forward; turns away from anything within "));
+    Serial.print(AVOID_CM);
+    Serial.println(F(" cm. Send 5 to stop."));
+    return;
+  }
+
+  uint8_t left = (INIT_MS - elapsed + 999) / 1000;   // whole seconds, rounded up
+  if (left != shown && left < INIT_MS / 1000) {
+    shown = left;
+    Serial.print(F("INIT - driving in "));
+    Serial.print(left);
+    Serial.println(F(" s"));
+  }
+}
+
+// A drive or arm command during the countdown means a bench test: stay in
+// MANUAL instead of driving off when the countdown ends.
+void cancelAutoStart() {
+  if (!autoStartPending) return;
+  autoStartPending = false;
+  Serial.println(F("INIT - auto start cancelled, staying in MANUAL (send A to drive)"));
 }
 
 void printHelp() {
@@ -466,53 +518,40 @@ bool isCommandFresh() {
 
 // ------------------------------------------------------- avoidance
 /*
- * With only a left and a right sensor the one decision is which way to
- * turn: back out so the front has room to swing, then turn toward the
- * more open side. If both are still tight, the next loop backs out and
- * turns again. Blocking turns are fine here: the wheels are already
- * stopped and nothing else needs servicing during the manoeuvre.
+ * Called with the wheels already stopped, when either side reads closer
+ * than AVOID_CM. Turn away from the blocked side:
+ *     right blocked  -> turn left
+ *     left blocked   -> turn right
+ *     both blocked   -> back out first, then turn toward whichever side
+ *                       has more room
+ * A turn is a spin in place for TURN_MS. The next loop reads the sensors
+ * again, so a turn that was not enough is simply followed by another.
+ * Blocking is fine here: nothing else needs servicing mid-manoeuvre.
  */
 void avoidObstacle() {
-  driveBackward(DRIVE_SPEED);
-  delay(BACKUP_MS);
-  driveStop();
+  bool turnLeft;
 
-  readAllDistances();
+  if (distLeft < AVOID_CM && distRight < AVOID_CM) {
+    driveBackward(DRIVE_SPEED);
+    delay(BACKUP_MS);
+    driveStop();
+    readAllDistances();
+    turnLeft = distLeft >= distRight;
+  } else {
+    turnLeft = distRight < AVOID_CM;
+  }
 
-  if (distLeft >= distRight) {
+  Serial.print(F("AVOID - left "));
+  Serial.print(distLeft);
+  Serial.print(F(" cm, right "));
+  Serial.print(distRight);
+  Serial.println(turnLeft ? F(" cm -> turn left") : F(" cm -> turn right"));
+
+  if (turnLeft) {
     driveTurnLeft(TURN_SPEED);
   } else {
     driveTurnRight(TURN_SPEED);
   }
-
   delay(TURN_MS);
   driveStop();
-}
-
-/*
- * Bend away from something near but not yet close, by slowing (L298N) or
- * stopping (relays) the wheel on the far side. Returns false when there
- * is nothing to bend away from.
- *
- * The bend starts under VEER_CM, picks its direction once, and holds it
- * until both sides read VEER_HYST_CM past the line. Without that, a
- * reading hovering on the line - or two walls about equally near - would
- * flip the drive every loop and chatter the relays to death.
- */
-bool veerAway() {
-  static int8_t bend = 0;   // +1 bending right, -1 bending left, 0 straight
-  uint16_t nearest = min(distLeft, distRight);
-
-  if (bend == 0 && nearest < VEER_CM) {
-    bend = (distLeft < distRight) ? 1 : -1;
-  } else if (nearest >= VEER_CM + VEER_HYST_CM) {
-    bend = 0;
-  }
-
-  if (bend > 0) {
-    driveCurve(DRIVE_SPEED, VEER_SPEED);   // nearer on the left - bend right
-  } else if (bend < 0) {
-    driveCurve(VEER_SPEED, DRIVE_SPEED);   // nearer on the right - bend left
-  }
-  return bend != 0;
 }

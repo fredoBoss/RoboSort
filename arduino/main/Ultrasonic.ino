@@ -7,7 +7,7 @@
  * Neither one looks straight ahead, so nothing here sees an obstacle dead
  * in front of the rover. Angling both 30-45 deg toward the front covers
  * most of it; the avoidance in main.ino works either way, because all it
- * asks is which side is nearer.
+ * asks is which side is blocked.
  *
  * pulseIn blocks, so a sweep costs up to 2 x ECHO_TIMEOUT_US plus the gap
  * between sensors. The timeout is deliberately tight: a long one lets a
@@ -54,4 +54,21 @@ void readAllDistances() {
   distLeft  = readDistance(IDX_LEFT);
   delay(SONAR_GAP_MS);
   distRight = readDistance(IDX_RIGHT);
+}
+
+// Start-up report, one reading per sensor. MAX_RANGE_CM means no echo came
+// back: nothing within ~2 m, or the sensor is not connected.
+void printSensorCheck() {
+  readAllDistances();
+  Serial.print(F("INIT sensors - left "));
+  Serial.print(distLeft);
+  Serial.print(F(" cm, right "));
+  Serial.print(distRight);
+  Serial.print(F(" cm"));
+  if (distLeft == MAX_RANGE_CM || distRight == MAX_RANGE_CM) {
+    Serial.print(F(" ("));
+    Serial.print(MAX_RANGE_CM);
+    Serial.print(F(" = no echo: nothing within 2 m, or not connected)"));
+  }
+  Serial.println();
 }

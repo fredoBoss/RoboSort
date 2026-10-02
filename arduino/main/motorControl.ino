@@ -12,10 +12,12 @@
  *           the battery. On/off only - any speed above 0 is full speed.
  *   L298N   One board per motor on channel A, speed as PWM on ENA.
  *
- * With the drive wheels on a diagonal, a spin turns about the middle of
- * the chassis, the same both ways. An arc does not: it pivots near the
- * slower wheel, so bending left swings the front around the back-left
- * wheel while bending right swings the back around the front-right one.
+ * With the drive wheels on a diagonal, a spin - one side forward, the
+ * other backward - turns about the middle of the chassis, the same both
+ * ways. That is why every turn here is a spin and not an arc: an arc
+ * pivots near the slower wheel, which on this layout swings the front
+ * around the back-left wheel one way and the back around the front-right
+ * wheel the other.
  */
 
 /*
@@ -94,16 +96,13 @@ void driveBackward(uint8_t speed) {
   drive(-1, speed, -1, speed);
 }
 
-// Forward on an arc - the slower side is the inside of the curve. With
-// relays a side is either full speed or stopped, so the arc is a pivot.
-void driveCurve(uint8_t leftSpeed, uint8_t rightSpeed) {
-  drive(1, leftSpeed, 1, rightSpeed);
-}
-
+// Spin left: left motor (back-left) backward, right motor (front-right)
+// forward - counter-clockwise seen from above.
 void driveTurnLeft(uint8_t speed) {
   drive(-1, speed, 1, speed);
 }
 
+// Spin right: left motor forward, right motor backward - clockwise.
 void driveTurnRight(uint8_t speed) {
   drive(1, speed, -1, speed);
 }
