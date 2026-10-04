@@ -116,7 +116,7 @@ const uint8_t  TURN_SPEED    = 180;
 const uint16_t AVOID_CM      = 60;    // AUTO: a side closer than this -> turn away from it
 const uint16_t STOP_CM       = 20;    // MANUAL: forward refused / cut short closer than this
 const uint16_t BACKUP_MS     = 300;   // both sides blocked: back out first - blind, no rear sensor
-const uint16_t TURN_MS       = 600;   // how long an avoidance turn runs
+const uint16_t TURN_MS       = 3000;  // how long an avoidance turn runs
 const uint16_t MANUAL_MOVE_MS = 1000; // how long one manual drive command runs
 const uint16_t INIT_MS       = 10000; // after setup: motors held stopped, then auto start
 const uint32_t CMD_TIMEOUT_MS = 5000; // Pi silence before we assume no target
@@ -551,7 +551,9 @@ bool isCommandFresh() {
  *                       has more room
  * A turn is a spin in place for TURN_MS. The next loop reads the sensors
  * again, so a turn that was not enough is simply followed by another.
- * Blocking is fine here: nothing else needs servicing mid-manoeuvre.
+ * The back-up blocks, but the turn is long, so it keeps the heartbeat and
+ * the serial commands going: a 5 sent mid-turn stops the rover at once,
+ * not TURN_MS later.
  */
 void avoidObstacle() {
   bool turnLeft;
@@ -577,6 +579,13 @@ void avoidObstacle() {
   } else {
     driveTurnRight(TURN_SPEED);
   }
-  delay(TURN_MS);
+
+  uint32_t start = millis();
+  while (millis() - start < TURN_MS) {
+    heartbeat();
+    readSerialCommand();
+    if (manualMode) return;   // a command took over and has already stopped the wheels
+    delay(1);
+  }
   driveStop();
 }
