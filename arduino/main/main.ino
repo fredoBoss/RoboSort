@@ -29,7 +29,7 @@
  *     S  stretch out      R  retract
  *     7  or LOOKLEFT      9  or LOOKRIGHT - camera 45 deg left / right
  *     0  or LOOKAHEAD - camera back to 90, straight ahead
- *     H  home - every servo back to 90, camera included
+ *     H  home - lift, sort and camera back to 90, stretch pulled in
  *     C  conveyor on      O  conveyor off
  *     A  autonomous driving
  *     ?  print the list
@@ -102,11 +102,11 @@ const uint8_t PIN_SERVO_LIFT_R  = 12;
 // on 11, power from the servo buck like the others, never the Mega's 5V.
 const uint8_t PIN_SERVO_PAN     = 11;
 
-// Ultrasonics: left, right. These are the pins the left and right sensors
-// had when there were four, so existing wiring stands; 30/31 and 36/37
-// (the old front and rear) are free.
-const uint8_t PIN_TRIG[2] = {32, 34};
-const uint8_t PIN_ECHO[2] = {33, 35};
+// Ultrasonics: left, right. Right keeps its original 34/35; left moved
+// from 32/33 to 36/37 (the old rear sensor's pins). 30/31 and 32/33 are
+// free.
+const uint8_t PIN_TRIG[2] = {36, 34};
+const uint8_t PIN_ECHO[2] = {37, 35};
 
 // ------------------------------------------------------------- tuning
 // Speeds are PWM for the L298N. Relays have no speed: 0 is stop and
@@ -147,7 +147,7 @@ void setup() {
   Serial.println(F("RoboSort Mega ready"));
   printHelp();
   Serial.println(F("INIT drive  - relays off, wheels stopped"));
-  Serial.println(F("INIT arm    - lift, stretch and sort servos at 90"));
+  Serial.println(F("INIT arm    - lift and sort servos at 90, stretch pulled in"));
   Serial.println(F("INIT camera - pan servo at 90, looking straight ahead"));
   Serial.println(F("INIT belt   - conveyor off"));
   printSensorCheck();
@@ -330,7 +330,7 @@ void runCommand(const char *line) {
     case 'D': enterManual(); armLiftDown();   ok(F("lift down"));               break;
     case 'S': enterManual(); armStretchOut(); ok(F("stretch out"));             break;
     case 'R': enterManual(); armRetract();    ok(F("retract"));                 break;
-    case 'H': enterManual(); servoResetAll(); ok(F("home - all servos at 90")); break;
+    case 'H': enterManual(); servoResetAll(); ok(F("home - servos at 90, stretch pulled in")); break;
     case 'C': enterManual(); conveyorRun();   ok(F("conveyor on"));             break;
     case 'O': enterManual(); conveyorStop();  ok(F("conveyor off"));            break;
 
@@ -531,7 +531,7 @@ void printHelp() {
   Serial.println(F("commands: 8 or FORWARD  2 or BACKWARD  4 or LEFT  6 or RIGHT  5 or STOP"));
   Serial.println(F("          U lift up  D lift down  S stretch out  R retract"));
   Serial.println(F("          7 or LOOKLEFT  9 or LOOKRIGHT  0 or LOOKAHEAD - camera"));
-  Serial.println(F("          H home 90  C conveyor on  O conveyor off"));
+  Serial.println(F("          H home     C conveyor on  O conveyor off"));
   Serial.println(F("          A autonomous  ? this list + status"));
   Serial.println(F("          B bio      N non-bio    X none"));
   Serial.println(F("replies:  RX received, OK done, FAIL refused, DONE/STOP move ended"));

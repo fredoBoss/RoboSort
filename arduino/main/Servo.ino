@@ -8,8 +8,9 @@
  * and one micro servo (SG90 class) on the mast:
  *     pan              turns the webcam 45 deg left or right of straight ahead
  *
- * Every servo resets to SERVO_HOME (90 deg): at boot, after each pickup,
- * and on the H command.
+ * Every servo resets at boot, after each pickup, and on the H command:
+ * to SERVO_HOME (90 deg), except the stretch, which rests retracted at
+ * STRETCH_IN.
  *
  * Plus the conveyor DC motor (on/off through a relay), which lives here because it is part of the
  * same collect-and-sort sequence rather than part of driving.
@@ -50,8 +51,10 @@ const uint8_t SERVO_HOME = 90;
 // const uint8_t LIFT_UP     = 30;    // arm raised, clear of the ground
 const uint8_t LIFT_UP     = 60; 
 const uint8_t LIFT_DOWN   = 120;   // arm down on the item
-const uint8_t STRETCH_OUT = 160;   // reaching out for the item
-const uint8_t STRETCH_IN  = SERVO_HOME;  // retracted over the belt
+// Higher angle is in on this linkage - 160 was seen pulling the arm back
+// and 90 holding it out, so the stretch rests at STRETCH_IN, not at 90.
+const uint8_t STRETCH_OUT = 90;    // reaching out for the item
+const uint8_t STRETCH_IN  = 160;   // retracted over the belt - the rest position
 const uint8_t SORT_BIO    = 40;
 const uint8_t SORT_NONBIO = 140;
 
@@ -110,6 +113,11 @@ uint8_t panAngle = PAN_HOME;          // last angle sent to the pan servo
 const uint16_t CONVEYOR_RUN_MS = 5000;  // belt time from the arm to the bin
 
 void servoSetup() {
+  // attach() starts a channel at 90 unless it was given a pulse first. 90
+  // is reaching out on the stretch, so its rest pulse is loaded before
+  // attach() - otherwise the arm swings out and back at every power-up.
+  servoStretch.writeMicroseconds(map(STRETCH_IN, 0, 180, SERVO_MIN_US, SERVO_MAX_US));
+
   servoLiftL.attach(PIN_SERVO_LIFT_L,   SERVO_MIN_US, SERVO_MAX_US);
   servoLiftR.attach(PIN_SERVO_LIFT_R,   SERVO_MIN_US, SERVO_MAX_US);
   servoStretch.attach(PIN_SERVO_STRETCH, SERVO_MIN_US, SERVO_MAX_US);
@@ -152,9 +160,10 @@ void liftMoveTo(uint8_t target) {
   delay(LIFT_HOLD_MS);
 }
 
-// Park every servo, gate and camera included, at the reset angle.
+// Park every servo, gate and camera included, at its rest angle: 90 for
+// all but the stretch, which is pulled in.
 void servoResetAll() {
-  servoStretch.write(SERVO_HOME);
+  servoStretch.write(STRETCH_IN);
   servoSort.write(SERVO_HOME);
   servoPan.write(PAN_HOME);
   panAngle = PAN_HOME;
@@ -164,14 +173,14 @@ void servoResetAll() {
 
 // Arm only - the gate is sequenced separately by sortTo().
 void armHome() {
-  servoStretch.write(SERVO_HOME);
+  servoStretch.write(STRETCH_IN);
   liftMoveTo(SERVO_HOME);
   delay(SERVO_SETTLE_MS);
 }
 
 /*
  * Reach out, drop onto the item, scoop it back in, then belt it to the
- * bin area and return the arm to 90. Blocking on purpose - the rover is
+ * bin area and return the arm to rest. Blocking on purpose - the rover is
  * stationary for this and nothing should interleave with a half-extended
  * arm.
  */
@@ -190,7 +199,7 @@ void runPickupSequence() {
 
   conveyorPulse();
 
-  armHome();                       // lift and stretch back to 90
+  armHome();                       // lift back to 90, stretch pulled in
   pickupBusy = false;
 }
 
