@@ -17,17 +17,19 @@
  * serial port resets the Mega, so it restarts this countdown too.
  *
  * Commands, typed into a serial monitor at 9600 baud or sent by a program
- * on the same port. A drive or arm command during the countdown cancels
- * the auto start and leaves the rover in MANUAL for bench testing; 'A'
- * starts driving at once; the Pi's B/N/X and '?' leave the countdown
- * running. While driving, any drive or arm command takes control back,
- * so a bench test cannot be run over by the navigation loop.
+ * on the same port. A drive, arm or camera command during the countdown
+ * cancels the auto start and leaves the rover in MANUAL for bench testing;
+ * 'A' starts driving at once; the Pi's B/N/X and '?' leave the countdown
+ * running. While driving, any drive, arm or camera command takes control
+ * back, so a bench test cannot be run over by the navigation loop.
  *     8  or FORWARD       2  or BACKWARD / BACK
  *     4  or LEFT          6  or RIGHT
  *     5  or STOP - wheels and conveyor
  *     U  lift up          D  lift down
  *     S  stretch out      R  retract
- *     H  home - every servo back to 90
+ *     7  or LOOKLEFT      9  or LOOKRIGHT - camera 45 deg left / right
+ *     0  or LOOKAHEAD - camera back to 90, straight ahead
+ *     H  home - every servo back to 90, camera included
  *     C  conveyor on      O  conveyor off
  *     A  autonomous driving
  *     ?  print the list
@@ -43,7 +45,8 @@
  *
  * Tabs:
  *     motorControl.ino  2 drive motors, one per side, on relays or L298Ns
- *     Servo.ino         4 MG996R servos (2x lift, stretch, sort) + conveyor relay
+ *     Servo.ino         4 MG996R servos (2x lift, stretch, sort), camera pan
+ *                       servo, conveyor relay
  *     Ultrasonic.ino    2 HC-SR04 rangefinders, left and right
  *
  * Obstacle avoidance runs here, independent of the Pi - a silent or
@@ -95,6 +98,10 @@ const uint8_t PIN_SERVO_STRETCH = 10;
 const uint8_t PIN_SERVO_SORT    = 8;
 const uint8_t PIN_SERVO_LIFT_R  = 12;
 
+// Camera pan - the micro servo on the mast that turns the webcam. Signal
+// on 11, power from the servo buck like the others, never the Mega's 5V.
+const uint8_t PIN_SERVO_PAN     = 11;
+
 // Ultrasonics: left, right. These are the pins the left and right sensors
 // had when there were four, so existing wiring stands; 30/31 and 36/37
 // (the old front and rear) are free.
@@ -141,11 +148,12 @@ void setup() {
   printHelp();
   Serial.println(F("INIT drive  - relays off, wheels stopped"));
   Serial.println(F("INIT arm    - lift, stretch and sort servos at 90"));
+  Serial.println(F("INIT camera - pan servo at 90, looking straight ahead"));
   Serial.println(F("INIT belt   - conveyor off"));
   printSensorCheck();
   Serial.print(F("INIT - driving starts in "));
   Serial.print(INIT_MS / 1000);
-  Serial.println(F(" s. Any drive/arm command cancels it; A starts now."));
+  Serial.println(F(" s. Any drive/arm/camera command cancels it; A starts now."));
   initStartedAt = millis();
 }
 
@@ -214,7 +222,7 @@ void heartbeat() {
  * it sends a whole line at once, so the gap only comes after the last
  * character. Spaces are dropped, so " 8 " is "8".
  */
-const uint8_t  LINE_MAX     = 12;    // longest command is "BACKWARD"
+const uint8_t  LINE_MAX     = 12;    // longest commands are "LOOKRIGHT" / "LOOKAHEAD"
 const uint16_t LINE_IDLE_MS = 100;
 
 char     rxLine[LINE_MAX + 1];
@@ -274,15 +282,19 @@ void endLine() {
   rxTooLong = false;
 }
 
-// The drive moves have a word as well as a number; everything else is one
-// character. 0 for a word that is none of them.
+// The drive and camera moves have a word as well as a number; everything
+// else is one character. 0 for a word that is none of them. Spaces are
+// already gone, so "look left" arrives as LOOKLEFT.
 char wordToCommand(const char *word) {
-  if (strcmp_P(word, PSTR("FORWARD"))  == 0) return '8';
-  if (strcmp_P(word, PSTR("BACKWARD")) == 0) return '2';
-  if (strcmp_P(word, PSTR("BACK"))     == 0) return '2';
-  if (strcmp_P(word, PSTR("LEFT"))     == 0) return '4';
-  if (strcmp_P(word, PSTR("RIGHT"))    == 0) return '6';
-  if (strcmp_P(word, PSTR("STOP"))     == 0) return '5';
+  if (strcmp_P(word, PSTR("FORWARD"))   == 0) return '8';
+  if (strcmp_P(word, PSTR("BACKWARD"))  == 0) return '2';
+  if (strcmp_P(word, PSTR("BACK"))      == 0) return '2';
+  if (strcmp_P(word, PSTR("LEFT"))      == 0) return '4';
+  if (strcmp_P(word, PSTR("RIGHT"))     == 0) return '6';
+  if (strcmp_P(word, PSTR("STOP"))      == 0) return '5';
+  if (strcmp_P(word, PSTR("LOOKLEFT"))  == 0) return '7';
+  if (strcmp_P(word, PSTR("LOOKRIGHT")) == 0) return '9';
+  if (strcmp_P(word, PSTR("LOOKAHEAD")) == 0) return '0';
   return 0;
 }
 
@@ -321,6 +333,11 @@ void runCommand(const char *line) {
     case 'H': enterManual(); servoResetAll(); ok(F("home - all servos at 90")); break;
     case 'C': enterManual(); conveyorRun();   ok(F("conveyor on"));             break;
     case 'O': enterManual(); conveyorStop();  ok(F("conveyor off"));            break;
+
+    // Camera pan, 45 deg either side of straight ahead.
+    case '7': enterManual(); cameraLookLeft();  ok(F("look left - camera 45 deg left"));   break;
+    case '9': enterManual(); cameraLookRight(); ok(F("look right - camera 45 deg right")); break;
+    case '0': enterManual(); cameraLookAhead(); ok(F("look ahead - camera at 90"));        break;
 
     case 'A': resumeAuto(); ok(F("autonomous - driving on its own, send 5 to stop")); break;
     case '?': printHelp(); printStatus(); break;
@@ -441,6 +458,9 @@ void printStatus() {
   Serial.print(manualMove ? moveName(manualMove) : F("none"));
   Serial.print(F(", conveyor "));
   Serial.print(conveyorIsOn() ? F("on") : F("off"));
+  Serial.print(F(", camera "));
+  Serial.print(cameraAngle());
+  Serial.print(F(" deg"));
   Serial.print(F(", left "));
   Serial.print(distLeft);
   Serial.print(F(" cm, right "));
@@ -461,7 +481,10 @@ void printStatus() {
  * Back to autonomous. The latched command is dropped on the way out: a B
  * or N that arrived during the bench session would otherwise fire a
  * pickup the moment the rover starts driving again. A belt left running
- * by 'C' is stopped too - in AUTO the pickup sequence owns it.
+ * by 'C' is stopped too - in AUTO the pickup sequence owns it. And the
+ * camera is turned back to face ahead: the arm only reaches straight
+ * ahead, so trash seen with the camera turned aside is not where the arm
+ * would grab.
  */
 void resumeAuto() {
   autoStartPending = false;
@@ -469,6 +492,7 @@ void resumeAuto() {
   manualMove  = 0;
   lastCommand = CMD_NONE;
   conveyorStop();
+  cameraLookAhead();
 }
 
 // Every loop: count the init period down once a second, then start
@@ -506,6 +530,7 @@ void cancelAutoStart() {
 void printHelp() {
   Serial.println(F("commands: 8 or FORWARD  2 or BACKWARD  4 or LEFT  6 or RIGHT  5 or STOP"));
   Serial.println(F("          U lift up  D lift down  S stretch out  R retract"));
+  Serial.println(F("          7 or LOOKLEFT  9 or LOOKRIGHT  0 or LOOKAHEAD - camera"));
   Serial.println(F("          H home 90  C conveyor on  O conveyor off"));
   Serial.println(F("          A autonomous  ? this list + status"));
   Serial.println(F("          B bio      N non-bio    X none"));

@@ -1,13 +1,15 @@
 /*
- * RoboSort - arm servos, conveyor, and the sorting gate
+ * RoboSort - arm servos, camera pan, conveyor, and the sorting gate
  *
  * Four MG996R servos, 180 degree:
  *     lift L + lift R  one pair sharing the arm pivot, mounted alike
  *     stretch          extends / retracts the arm toward the trash
  *     sort             the gate that sends an item to the bio or non-bio bin
+ * and one micro servo (SG90 class) on the mast:
+ *     pan              turns the webcam 45 deg left or right of straight ahead
  *
  * Every servo resets to SERVO_HOME (90 deg): at boot, after each pickup,
- * and whenever a command is not understood.
+ * and on the H command.
  *
  * Plus the conveyor DC motor (on/off through a relay), which lives here because it is part of the
  * same collect-and-sort sequence rather than part of driving.
@@ -24,6 +26,7 @@ Servo servoLiftL;
 Servo servoLiftR;
 Servo servoStretch;
 Servo servoSort;
+Servo servoPan;
 
 /*
  * MG996R covers its full 180 deg over roughly 500-2500 us. The library's
@@ -51,6 +54,16 @@ const uint8_t STRETCH_OUT = 160;   // reaching out for the item
 const uint8_t STRETCH_IN  = SERVO_HOME;  // retracted over the belt
 const uint8_t SORT_BIO    = 40;
 const uint8_t SORT_NONBIO = 140;
+
+/*
+ * Camera pan: home is straight ahead, the only direction the arm can
+ * reach, and it turns 45 deg either way from there. On most servos seen
+ * from the horn side, a larger angle turns anticlockwise - to the left.
+ * If LOOKLEFT turns the camera right, swap PAN_LEFT and PAN_RIGHT.
+ */
+const uint8_t PAN_HOME  = SERVO_HOME;   // 90, looking straight ahead
+const uint8_t PAN_LEFT  = 135;          // home + 45
+const uint8_t PAN_RIGHT = 45;           // home - 45
 
 /*
  * Both lift servos are mounted the same way round on the pivot, so they
@@ -86,6 +99,14 @@ const uint16_t LIFT_HOLD_MS   = 150;    // after the ramp, let the arm stop swin
 
 // Last angle sent to the lift pair. attach() parks it at 90, so it starts there.
 uint8_t liftAngle = SERVO_HOME;
+
+/*
+ * An SG90 is about 0.1 s per 60 deg, so the widest pan move (left to
+ * right, 90 deg) takes ~0.15 s. 300 ms adds time for the camera on the
+ * mast to stop wobbling before the next frame is worth classifying.
+ */
+const uint16_t PAN_SETTLE_MS = 300;
+uint8_t panAngle = PAN_HOME;          // last angle sent to the pan servo
 const uint16_t CONVEYOR_RUN_MS = 5000;  // belt time from the arm to the bin
 
 void servoSetup() {
@@ -93,6 +114,7 @@ void servoSetup() {
   servoLiftR.attach(PIN_SERVO_LIFT_R,   SERVO_MIN_US, SERVO_MAX_US);
   servoStretch.attach(PIN_SERVO_STRETCH, SERVO_MIN_US, SERVO_MAX_US);
   servoSort.attach(PIN_SERVO_SORT,       SERVO_MIN_US, SERVO_MAX_US);
+  servoPan.attach(PIN_SERVO_PAN,         SERVO_MIN_US, SERVO_MAX_US);
 
   // Relay pin written to "off" before it becomes an output, so the belt
   // cannot twitch on for an instant at boot.
@@ -130,10 +152,12 @@ void liftMoveTo(uint8_t target) {
   delay(LIFT_HOLD_MS);
 }
 
-// Park every servo, gate included, at the reset angle.
+// Park every servo, gate and camera included, at the reset angle.
 void servoResetAll() {
   servoStretch.write(SERVO_HOME);
   servoSort.write(SERVO_HOME);
+  servoPan.write(PAN_HOME);
+  panAngle = PAN_HOME;
   liftMoveTo(SERVO_HOME);
   delay(SERVO_SETTLE_MS);
 }
@@ -214,6 +238,25 @@ void armStretchOut() {
 void armRetract() {
   servoStretch.write(STRETCH_IN);
   delay(SERVO_SETTLE_MS);
+}
+
+// ------------------------------------------------------- camera pan
+// Same contract: each returns once the camera has stopped moving. A move
+// to where the camera already points returns at once.
+void panTo(uint8_t angle) {
+  if (angle == panAngle) return;
+  servoPan.write(angle);
+  panAngle = angle;
+  delay(PAN_SETTLE_MS);
+}
+
+void cameraLookLeft()  { panTo(PAN_LEFT);  }
+void cameraLookRight() { panTo(PAN_RIGHT); }
+void cameraLookAhead() { panTo(PAN_HOME);  }
+
+// For the STATUS line - main.ino cannot read panAngle itself.
+uint8_t cameraAngle() {
+  return panAngle;
 }
 
 /*
